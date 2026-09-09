@@ -34,24 +34,3 @@ https://raw.githubusercontent.com/NDokahara/FinalFantasyXIV/main/repo.json
 ```
 
 tick it, **Save and Close**, then `/xlplugins` → search **XIV Blackjack** → Install.
-
-That URL is the plugin list, shared by everything in
-[NDokahara/FinalFantasyXIV](https://github.com/NDokahara/FinalFantasyXIV). Add it once and
-future plugins show up on their own.
-
-## Upgrading from 0.1.x
-
-0.2.0 renamed the plugin's internal identifier, so Dalamud sees it as a new plugin rather
-than an update. Settings, bank balances and blocklists do not carry over. Settle any
-outstanding balances before switching, then uninstall the old **XIV Blackjack** entry and
-install this one.
-
-## Building
-
-Requires the Dalamud dev environment (`%AppData%\XIVLauncher\addon\Hooks\dev`).
-
-```
-dotnet build -c Release
-```
-
-See [RELEASING.md](RELEASING.md) for packaging and publishing.
