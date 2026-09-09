@@ -1,0 +1,15 @@
+{
+  "Author": "Dokahara",
+  "Name": "XIV Blackjack",
+  "Punchline": "You deal, it does the rest.",
+  "Description": "Runs the boring half of dealing blackjack at a venue.\n\nIt watches the cards, adds everything up, and tells you who won and what you owe them. Bets stick around between rounds, so no more retyping the same numbers all night.\n\nRegulars can leave their gil with you instead of trading every hand. And when the night's done, the payout tab sorts out the split, whether you're playing off your own gil or the venue's.\n\nCommands:\n/blackjack \u2014 open the window\n/blackjack config \u2014 open settings\n/blackjack on | off \u2014 start or stop watching rolls\n\nBlackjack engine borrowed from Infi's DeathRoll Helper (https://github.com/Infiziert90/DeathRoll).",
+  "InternalName": "XIVBlackjack",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "blackjack",
+    "cards",
+    "venue",
+    "dealer",
+    "gambling"
+  ]
+}
