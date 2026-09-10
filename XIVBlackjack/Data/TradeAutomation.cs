@@ -81,15 +81,6 @@ public unsafe class TradeAutomation : IDisposable
 
     private bool Resent;
 
-    // The window closing says only that it closed. Whether gil actually moved comes from the
-    // game's own outcome message, latched here by the chat handler.
-    private TradeResult Result = TradeResult.Unknown;
-    private DateTime ClosedAt = DateTime.MinValue;
-
-    // The outcome message and the TradeOpen flag are not ordered against each other, so allow
-    // a beat after the window closes for the message to land.
-    private static readonly TimeSpan ResultGrace = TimeSpan.FromSeconds(2);
-
     /// <summary>
     /// Collect mode opens the window and stops. Used for a double down or a split, where the
     /// player is putting gil in rather than taking it out, so there is nothing to fill.
@@ -177,8 +168,6 @@ public unsafe class TradeAutomation : IDisposable
         RunIndex = 1;
         CollectOnly = true;
         Resent = false;
-        Result = TradeResult.Unknown;
-        ClosedAt = DateTime.MinValue;
         StatusMessage = string.Empty;
 
         Plugin.Log.Information($"[Trade] Collect from {IntendedPartner}");
@@ -191,8 +180,6 @@ public unsafe class TradeAutomation : IDisposable
         RunIndex++;
         Resent = false;
         CollectOnly = false;
-        Result = TradeResult.Unknown;
-        ClosedAt = DateTime.MinValue;
 
         Plugin.Log.Information($"[Trade] Trade {RunIndex}/{RunTotal}: {IntendedAmount:N0}");
         Advance(TradeStep.Targeting);
@@ -333,37 +320,14 @@ public unsafe class TradeAutomation : IDisposable
                 if (Plugin.Condition[ConditionFlag.TradeOpen])
                     return;
 
-                // Old behaviour, kept behind a switch for clients whose outcome messages this
-                // does not read: assume a closed window means success.
-                if (!Plugin.Configuration.ConfirmTradesFromChat)
-                {
-                    MarkSentAndContinue();
-                    return;
-                }
-
-                if (ClosedAt == DateTime.MinValue)
-                    ClosedAt = DateTime.UtcNow;
-
-                if (Result == TradeResult.Unknown && DateTime.UtcNow - ClosedAt < ResultGrace)
-                    return;
-
-                switch (Result)
-                {
-                    case TradeResult.Completed:
-                        MarkSentAndContinue();
-                        return;
-
-                    case TradeResult.Cancelled:
-                        CloseOutCancelled();
-                        return;
-
-                    default:
-                        // Refusing to guess is the whole point. Counting a trade that may not
-                        // have happened is what quietly underpays people mid-chain.
-                        Pending.Clear();
-                        Fail($"Couldn't confirm trade {RunIndex} of {RunTotal} — the game reported no outcome. Nothing marked as sent.");
-                        return;
-                }
+                // A closed window is treated as a completed trade. It is not the same thing —
+                // a cancel looks identical from here — but the chat-message approach that could
+                // tell them apart did not fire reliably, and stalling a real payout to ask about
+                // a trade that went through is worse than over-counting a rare cancel. The
+                // dealer can undo. See the [Trade] chat logging in Plugin.OnChatMessage for the
+                // diagnostic groundwork if this gets revisited.
+                MarkSentAndContinue();
+                return;
 
             case TradeStep.BetweenTrades:
                 if (elapsed < BetweenTradesDelay)
@@ -372,18 +336,6 @@ public unsafe class TradeAutomation : IDisposable
                 StartNextTrade();
                 return;
         }
-    }
-
-    /// <summary>
-    /// Latches the outcome the game printed. Only meaningful while a run is in flight.
-    /// </summary>
-    public void NoteTradeResult(TradeResult result)
-    {
-        if (!IsRunning || result == TradeResult.Unknown)
-            return;
-
-        Result = result;
-        Plugin.Log.Information($"[Trade] Game reported: {result}");
     }
 
     private void MarkSentAndContinue()
@@ -402,20 +354,6 @@ public unsafe class TradeAutomation : IDisposable
         StatusMessage = RunTotal > 1
             ? $"All {RunTotal} trades done."
             : $"Trade closed. Marked {IntendedAmount:N0} as sent.";
-    }
-
-    /// <summary>
-    /// A cancelled trade stops the run and leaves TradesCompleted alone, so the settlement row
-    /// still offers this chunk and pressing Auto again picks up exactly where it stopped.
-    /// </summary>
-    private void CloseOutCancelled()
-    {
-        var abandoned = Pending.Count;
-        Pending.Clear();
-
-        Fail(abandoned > 0
-            ? $"Trade {RunIndex} of {RunTotal} was cancelled. Nothing sent, and {abandoned} later trade(s) dropped."
-            : "Trade was cancelled. Nothing sent.");
     }
 
     private bool TargetMatchesIntent()

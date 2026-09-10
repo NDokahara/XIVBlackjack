@@ -166,16 +166,11 @@ public sealed class Plugin : IDalamudPlugin
     {
         var text = message.Message.TextValue;
 
-        // Not gated on ReadRollsFromChat: the two read the same stream but answer unrelated
-        // questions, and a dealer who turned roll-reading off still needs trades counted right.
-        var outcome = TradeMessages.Classify(text);
-        if (outcome != TradeResult.Unknown)
-        {
-            if (DebugConfig.Debug)
-                Log.Information($"[Trade] Chat outcome: kind={message.LogKind} result={outcome} text=\"{text}\"");
-
-            TradeAutomation.NoteTradeResult(outcome);
-        }
+        // Diagnostic only — nothing acts on this. Trade counting goes by the window closing.
+        // Logs every line seen during a run, matched or not, since an unrecognised outcome
+        // message is the case worth capturing if this is ever revisited.
+        if (TradeAutomation.IsRunning && DebugConfig.Debug)
+            Log.Information($"[Trade] chat seen: kind={message.LogKind} match={TradeMessages.Classify(text)} text=\"{text}\"");
 
         if (!Configuration.ReadRollsFromChat)
             return;

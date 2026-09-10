@@ -8,7 +8,7 @@ public class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 0;
 
-    public bool On = false;
+    public bool On = true;
 
     // Blocklist
     public bool ActiveBlocklist = false;
@@ -37,13 +37,6 @@ public class Configuration : IPluginConfiguration
     /// this on alongside healthy hooks is harmless.
     /// </summary>
     public bool ReadRollsFromChat = true;
-
-    /// <summary>
-    /// Waits for the game's own trade outcome message before marking a trade as sent, rather
-    /// than treating the window closing as success. Reads English text, so turn it off on
-    /// other clients — at the cost of a cancelled trade counting as sent again.
-    /// </summary>
-    public bool ConfirmTradesFromChat = true;
 
     /// <summary>
     /// Tables are normally run in a party, alliance or linkshell, where "/dice" keeps the

@@ -77,9 +77,6 @@ public partial class ConfigWindow
         changed |= ImGui.Checkbox("Read rolls from chat", ref Configuration.ReadRollsFromChat);
         ImGuiComponents.HelpMarker("Reads rolls out of the chat line instead of relying on the game-function hooks. Needed when a hook's signature goes stale after a patch. Duplicates are filtered, so it is safe to leave on.");
 
-        changed |= ImGui.Checkbox("Confirm trades from chat", ref Configuration.ConfirmTradesFromChat);
-        ImGuiComponents.HelpMarker("Waits for the game to say the trade completed before marking it sent, so a cancelled trade no longer counts and no longer skips a chunk mid-payout. Reads English text; turn it off on other clients.");
-
         changed |= ImGui.Checkbox("Buttons roll for you", ref Configuration.ButtonsRoll);
         ImGuiComponents.HelpMarker("Hit sends the roll command itself, and a Roll button appears whenever the plugin is waiting on a card.");
 
