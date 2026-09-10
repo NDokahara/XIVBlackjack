@@ -15,12 +15,20 @@ public class GameSnapshot
     public readonly BlackjackPlayer Dealer;
     public readonly List<BlackjackPlayer> Players;
 
-    public GameSnapshot(string label, GameState state, int currentPlayerIndex, BlackjackPlayer dealer, List<BlackjackPlayer> players)
+    /// <summary>
+    /// Whether the round had already been written to player banks. Restored with everything
+    /// else, so undoing past the point banks were applied re-offers the button instead of
+    /// leaving balances describing a round that no longer exists.
+    /// </summary>
+    public readonly bool BanksApplied;
+
+    public GameSnapshot(string label, GameState state, int currentPlayerIndex, BlackjackPlayer dealer, List<BlackjackPlayer> players, bool banksApplied)
     {
         Label = label;
         State = state;
         CurrentPlayerIndex = currentPlayerIndex;
         Dealer = dealer.Clone();
         Players = players.Select(p => p.Clone()).ToList();
+        BanksApplied = banksApplied;
     }
 }

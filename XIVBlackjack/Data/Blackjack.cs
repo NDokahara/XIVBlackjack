@@ -205,18 +205,35 @@ public class Blackjack
     }
 
     /// <summary>
-    /// What actually changes hands for a PERSON at the end of a round.
-    /// Positive means trade this much to them; negative means collect it.
+    /// What the dealer is still holding for this person once the hand has resolved:
+    /// everything they staked, plus or minus what the hand did. Never negative — the
+    /// most a hand can cost is what was put up for it.
+    /// </summary>
+    public int ResidualFor(BlackjackPlayer player) => TotalWagered(player) + TotalWinnings(player);
+
+    /// <summary>
+    /// True when the residual will not cover next round's stake, so the player has to
+    /// buy back in rather than roll over. A total loss is the ordinary case; a surrender
+    /// also lands here, because half a wager is not a whole one.
+    /// </summary>
+    public bool NeedsRestakeAfter(BlackjackPlayer player) => ResidualFor(player) < RollOverBet(player);
+
+    /// <summary>
+    /// What actually gets traded to a PERSON at the end of a round. Never negative:
+    /// the dealer is already holding the stakes, so settlement only ever hands gil back.
     ///
-    /// The dealer is holding every stake already — the base wager, plus the extra
-    /// collected on a double down or a split. After the hand the dealer holds the
-    /// total Return, and keeps just the standing Wager back as the next round's
-    /// stake. Anything above that is traded out. A negative result is never collected
-    /// at settlement; it just means the player has to buy back in next round.
+    /// Two cases. If the residual covers next round's stake, hold the stake back and
+    /// trade out the rest. If it does not — a loss, or a surrender that left only half
+    /// a wager — nothing can roll over, so the whole residual goes back and the player
+    /// restakes. That second branch is what stops a surrender quietly keeping the half
+    /// wager the player is still owed.
     /// </summary>
     public int SettlementFor(BlackjackPlayer player)
     {
-        return TotalWagered(player) + TotalWinnings(player) - RollOverBet(player);
+        var residual = ResidualFor(player);
+        var rollOver = RollOverBet(player);
+
+        return residual >= rollOver ? residual - rollOver : residual;
     }
 
     /// <summary>Everything this person put up across all their hands, doubles included.</summary>
@@ -297,7 +314,7 @@ public class Blackjack
     /// </summary>
     public void PushUndo(string label)
     {
-        UndoStack.Add(new GameSnapshot(label, Plugin.State, CurrentPlayerIndex, Dealer, Players));
+        UndoStack.Add(new GameSnapshot(label, Plugin.State, CurrentPlayerIndex, Dealer, Players, BanksApplied));
 
         if (UndoStack.Count > MaxUndoDepth)
             UndoStack.RemoveAt(0);
@@ -314,6 +331,7 @@ public class Blackjack
         Players = snapshot.Players.Select(p => p.Clone()).ToList();
         Dealer = snapshot.Dealer.Clone();
         CurrentPlayerIndex = snapshot.CurrentPlayerIndex;
+        BanksApplied = snapshot.BanksApplied;
 
         Plugin.SwitchState(snapshot.State);
         Plugin.Log.Information($"Undid: {snapshot.Label}");
@@ -802,7 +820,7 @@ public class Blackjack
             // Split hands are separate rows but the same person, so they settle together.
             // A negative settlement means the dealer is no longer holding a full stake
             // for them, whatever the shortfall happened to be.
-            l.Add(new BlackjackPlayer(player.Name, player.Wager) { NeedsRestake = SettlementFor(player) < 0 });
+            l.Add(new BlackjackPlayer(player.Name, player.Wager) { NeedsRestake = NeedsRestakeAfter(player) });
         }
         Players = l;
 

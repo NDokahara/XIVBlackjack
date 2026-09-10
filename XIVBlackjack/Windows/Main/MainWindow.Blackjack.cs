@@ -238,12 +238,11 @@ public partial class MainWindow
                     continue;
 
                 var settlement = Plugin.Blackjack.SettlementFor(player);
-                var text = settlement switch
-                {
-                    > 0 => $"+{settlement:N0}",
-                    < 0 => "lost",
-                    _ => "even"
-                };
+                var text = settlement > 0
+                    ? $"+{settlement:N0}"
+                    : Plugin.Blackjack.NeedsRestakeAfter(player)
+                        ? "lost"
+                        : "even";
                 finalPayout += $"{player.Name.Split()[0]} -> {text} | ";
             }
             ImGui.SetClipboardText(finalPayout);
@@ -587,10 +586,16 @@ public partial class MainWindow
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip($"What you are holding for {pFlavor}: {wagered:N0} wagered {(winnings < 0 ? "-" : "+")} {Math.Abs(winnings):N0} winnings.");
 
+            // Nothing rolls over when the residual could not cover it — the player restakes,
+            // so showing their old wager here would claim the dealer is holding gil they are not.
+            var restaking = Plugin.Blackjack.NeedsRestakeAfter(player);
+
             ImGui.TableNextColumn();
-            ImGui.Text($"{rollOver:N0}");
+            ImGui.Text($"{(restaking ? 0 : rollOver):N0}");
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Held back as their stake for the next round.");
+                ImGui.SetTooltip(restaking
+                    ? "Nothing held back \u2014 they need to restake next round."
+                    : "Held back as their stake for the next round.");
 
             var chunks = Blackjack.SplitIntoTrades(settlement);
 

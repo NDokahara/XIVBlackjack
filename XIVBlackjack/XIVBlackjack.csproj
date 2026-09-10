@@ -3,7 +3,7 @@
     <PropertyGroup>
         <Authors>Dokahara</Authors>
         <AssemblyName>XIVBlackjack</AssemblyName>
-        <Version>0.2.0.0</Version>
+        <Version>0.2.1.0</Version>
         <Description>Blackjack dealer tooling for FFXIV venues.</Description>
     </PropertyGroup>
 
