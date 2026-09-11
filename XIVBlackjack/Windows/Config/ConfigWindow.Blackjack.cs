@@ -73,32 +73,32 @@ public partial class ConfigWindow
         else
         {
             changed |= ImGui.Checkbox("Dealer Draws All Cards", ref Configuration.DealerDrawsAll);
-
-        changed |= ImGui.Checkbox("Read rolls from chat", ref Configuration.ReadRollsFromChat);
-        ImGuiComponents.HelpMarker("Reads rolls out of the chat line instead of relying on the game-function hooks. Needed when a hook's signature goes stale after a patch. Duplicates are filtered, so it is safe to leave on.");
-
-        changed |= ImGui.Checkbox("Buttons roll for you", ref Configuration.ButtonsRoll);
-        ImGuiComponents.HelpMarker("Hit sends the roll command itself, and a Roll button appears whenever the plugin is waiting on a card.");
-
-        changed |= ImGui.Checkbox("Open a trade on double down and split", ref Configuration.CollectOnDoubleSplit);
-        ImGuiComponents.HelpMarker("Both put a second stake up, so the trade window opens first. Roll once it closes.");
-
-        var useDice = Configuration.UseDiceCommand ? 0 : 1;
-        ImGui.Text("Roll with:");
-        ImGui.SameLine();
-        if (ImGui.RadioButton("/dice 13", ref useDice, 0))
-        {
-            Configuration.UseDiceCommand = true;
-            changed = true;
-        }
-        ImGui.SameLine();
-        if (ImGui.RadioButton("/random 13", ref useDice, 1))
-        {
-            Configuration.UseDiceCommand = false;
-            changed = true;
-        }
-        ImGuiComponents.HelpMarker("/dice stays inside the party, alliance or linkshell the table is run in. /random broadcasts to everyone nearby.");
             ImGuiComponents.HelpMarker("Dealer draws all cards instead of players. Faster gameplay!");
+
+            changed |= ImGui.Checkbox("Read rolls from chat", ref Configuration.ReadRollsFromChat);
+            ImGuiComponents.HelpMarker("Reads rolls out of the chat line instead of relying on the game-function hooks. Needed when a hook's signature goes stale after a patch. Duplicates are filtered, so it is safe to leave on.");
+
+            changed |= ImGui.Checkbox("Buttons roll for you", ref Configuration.ButtonsRoll);
+            ImGuiComponents.HelpMarker("Hit sends the roll command itself, and a Roll button appears whenever the plugin is waiting on a card.");
+
+            changed |= ImGui.Checkbox("Open a trade on double down and split", ref Configuration.CollectOnDoubleSplit);
+            ImGuiComponents.HelpMarker("Both put a second stake up, so the trade window opens first. Roll once it closes.\n\nSkipped for players with a bank \u2014 their balance covers it.");
+
+            var useDice = Configuration.UseDiceCommand ? 0 : 1;
+            ImGui.Text("Roll with:");
+            ImGui.SameLine();
+            if (ImGui.RadioButton("/dice 13", ref useDice, 0))
+            {
+                Configuration.UseDiceCommand = true;
+                changed = true;
+            }
+            ImGui.SameLine();
+            if (ImGui.RadioButton("/random 13", ref useDice, 1))
+            {
+                Configuration.UseDiceCommand = false;
+                changed = true;
+            }
+            ImGuiComponents.HelpMarker("/dice stays inside the party, alliance or linkshell the table is run in. /random broadcasts to everyone nearby.");
 
             if (changed)
                 Configuration.VenueDealer = true;
@@ -119,5 +119,11 @@ public partial class ConfigWindow
         ImGui.SameLine();
         ImGui.Text("Dealer Rule");
         ImGuiComponents.HelpMarker(DealerHitMsg);
+
+        ImGuiHelpers.ScaledDummy(3.0f);
+
+        changed |= ImGui.Checkbox("A push on a double down forfeits the double", ref Configuration.ForfeitDoubleOnPush);
+        ImGuiComponents.HelpMarker("Off (standard rules): a push hands back everything the player staked, the double included.\n\n" +
+                                   "On (house rule): only their original bet comes back on a push. The extra they put up to double is kept by the house.");
     }
 }

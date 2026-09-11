@@ -26,6 +26,12 @@ public class Configuration : IPluginConfiguration
     public int BlackjackMode = 1;
     public DealerRules DealerRule = DealerRules.DealerHard16;
 
+    /// <summary>
+    /// House rule. Off (standard): a push returns everything staked, a double included.
+    /// On: only the standing wager comes back on a push, and the doubled portion is kept.
+    /// </summary>
+    public bool ForfeitDoubleOnPush = false;
+
     // Venue-mode buttons
     public bool ButtonsRoll = true;
     public bool CollectOnDoubleSplit = true;

@@ -34,3 +34,12 @@ https://raw.githubusercontent.com/NDokahara/FinalFantasyXIV/main/repo.json
 ```
 
 tick it, **Save and Close**, then `/xlplugins` → search **XIV Blackjack** → Install.
+
+## Reporting bugs
+
+Something off at the table? Either works — the **General** tab in settings has buttons for both.
+
+- [Bug report form](https://forms.gle/9wa27ViAzpPZ3aAL8) — quick, no account needed
+- [GitHub issues](https://github.com/NDokahara/XIVBlackjack/issues) — best if you want to attach screenshots or logs
+
+Mention your plugin version (shown next to the buttons) and the steps that led to it.

@@ -162,7 +162,7 @@ public partial class MainWindow
                 Plugin.Configuration.Save();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("They traded gil in. Credits the account.");
+                ImGui.SetTooltip("They traded gil in. Credits the account.\n\nAlso how to fix a cash-out entered too large.");
 
             ImGui.SameLine();
             if (ImGui.SmallButton($"Out##{key}"))
@@ -173,7 +173,7 @@ public partial class MainWindow
                 Plugin.Configuration.Save();
             }
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("You traded gil back. Debits the account.");
+                ImGui.SetTooltip("You traded gil back. Debits the account.\n\nThe table's Undo doesn't reverse this \u2014 use In to correct it.");
 
             ImGui.SameLine();
             if (ImGuiComponents.IconButton($"##close{key}", FontAwesomeIcon.Trash) && ImGui.GetIO().KeyShift)

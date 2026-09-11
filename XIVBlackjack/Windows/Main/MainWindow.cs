@@ -14,6 +14,10 @@ public partial class MainWindow : Window, IDisposable
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
         };
 
+        // First open only — anyone who has already sized the window keeps their size.
+        Size = new Vector2(760, 640);
+        SizeCondition = ImGuiCond.FirstUseEver;
+
         Plugin = plugin;
     }
 

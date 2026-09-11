@@ -73,22 +73,24 @@ public class BlackjackPlayer
     /// <summary>
     /// Gil the player wins (+) or loses (-) on this hand. Derived, never stored.
     ///
-    /// House rule on a push: only the standing wager comes back, so anything staked
-    /// on top of it — the extra put up for a double down — is forfeited. For a hand
-    /// that never doubled, Stake equals Wager and this is simply zero.
+    /// A push is normally a clean push: everything staked comes back, the extra put up
+    /// for a double down included, so Net is zero. Some tables run a house rule where only
+    /// the standing wager comes back on a push and the doubled portion is forfeited —
+    /// pass forfeitDoubleOnPush for that. For a hand that never doubled, Stake equals
+    /// Wager and both rules give zero.
     /// </summary>
-    public int Net => Outcome switch
+    public int Net(bool forfeitDoubleOnPush) => Outcome switch
     {
         HandOutcome.Win => Stake,
         HandOutcome.Blackjack => (int)(Stake * 1.5f),
-        HandOutcome.Push => Wager - Stake,
+        HandOutcome.Push => forfeitDoubleOnPush ? Wager - Stake : 0,
         HandOutcome.Loss or HandOutcome.Bust => -Stake,
         HandOutcome.Surrender => -(Stake / 2),
         _ => 0
     };
 
     /// <summary>Total gil the dealer is holding for this hand once it resolves. Derived.</summary>
-    public int Return => Stake + Net;
+    public int Return(bool forfeitDoubleOnPush) => Stake + Net(forfeitDoubleOnPush);
 
     /// <summary>
     /// A natural: 21 on the opening two cards. Only a natural pays 3:2 — a 21 built
@@ -240,7 +242,8 @@ public class Blackjack
     public int TotalWagered(BlackjackPlayer player) => HandsOf(player).Sum(h => h.Stake);
 
     /// <summary>What they won (+) or lost (-) across all their hands.</summary>
-    public int TotalWinnings(BlackjackPlayer player) => HandsOf(player).Sum(h => h.Net);
+    public int TotalWinnings(BlackjackPlayer player) =>
+        HandsOf(player).Sum(h => h.Net(Plugin.Configuration.ForfeitDoubleOnPush));
 
     /// <summary>The stake the dealer holds back for the next round — the standing wager.</summary>
     public int RollOverBet(BlackjackPlayer player) =>
@@ -262,12 +265,36 @@ public class Blackjack
         if (player.HandClosed)
             return Array.Empty<string>();
 
-        var actions = new List<string> { "Hit", "Stay", "Surrender", "Double Down" };
+        var actions = new List<string> { "Hit", "Stay" };
+        if (CanSurrender(player))
+            actions.Add("Surrender");
+        if (CanDoubleDown(player))
+            actions.Add("Double Down");
         if (player.CanSplit)
             actions.Add("Split");
 
         return actions.ToArray();
     }
+
+    /// <summary>
+    /// True once this person's hand has been split — the parent and every split hand alike.
+    /// Derived from the table rather than stored, the same way CanSplit is, so it cannot
+    /// drift out of step after an undo.
+    /// </summary>
+    public bool IsPartOfSplit(BlackjackPlayer player) => HandsOf(player).Length > 1;
+
+    /// <summary>
+    /// A double is only allowed on a two-card hand, before anything else has been drawn to
+    /// it. That includes a fresh split hand (double after split), which is standard.
+    /// </summary>
+    public bool CanDoubleDown(BlackjackPlayer player) => !player.HandClosed && player.Cards.Count == 2;
+
+    /// <summary>
+    /// Surrender has to be the first decision on the original two cards: once the player has
+    /// hit, or has split, it is off the table.
+    /// </summary>
+    public bool CanSurrender(BlackjackPlayer player) =>
+        !player.HandClosed && player.Cards.Count == 2 && !IsPartOfSplit(player);
 
     /// <summary>
     /// The game caps a direct gil trade at 1,000,000, so anything larger has to go across
@@ -304,6 +331,22 @@ public class Blackjack
     /// <summary>Set once the round's results have been written to player banks.</summary>
     public bool BanksApplied;
 
+    /// <summary>
+    /// Exactly what the last Apply to Banks wrote, per account. Bank balances live in the
+    /// configuration, outside the table snapshots, so undo cannot restore them by copying —
+    /// it has to take back precisely these figures. Stored rather than recomputed, so the
+    /// reversal is right even if the round's result is edited before it runs.
+    /// </summary>
+    private readonly Dictionary<string, long> BankPosting = new();
+
+    /// <summary>
+    /// Payout gil that was marked sent and then lost track of by an Undo, per person. The
+    /// gil really did leave, so the dealer is shown this until the round ends — otherwise
+    /// the re-settled rows offer the same payout again as if nothing had gone out.
+    /// Lives outside the snapshots on purpose, the same way BankPosting does.
+    /// </summary>
+    public readonly Dictionary<string, int> SentBeforeUndo = new();
+
     public bool CanUndo => UndoStack.Count > 0;
     public int UndoDepth => UndoStack.Count;
     public string LastUndoLabel => CanUndo ? UndoStack[^1].Label : string.Empty;
@@ -320,13 +363,30 @@ public class Blackjack
             UndoStack.RemoveAt(0);
     }
 
+    /// <summary>Discards the most recent snapshot without restoring it.</summary>
+    private void DropLastUndo()
+    {
+        if (CanUndo)
+            UndoStack.RemoveAt(UndoStack.Count - 1);
+    }
+
     /// <summary>Roll the table back to the most recent snapshot.</summary>
     public void Undo()
     {
         if (!CanUndo)
             return;
 
+        // Before the rows are replaced: remember any payout the snapshot doesn't know was sent.
+        foreach (var (name, amount) in PayoutsUndoWouldForget())
+            SentBeforeUndo[name] = SentBeforeUndo.GetValueOrDefault(name) + amount;
+
         var snapshot = UndoStack.PopAt(UndoStack.Count - 1);
+
+        // Stepping back past Apply to Banks has to take the credit back out as well.
+        // Restoring the flag alone re-offers the button while the balances still hold the
+        // first posting, and pressing it again credits the round twice.
+        if (BanksApplied && !snapshot.BanksApplied)
+            ReverseBankPosting();
 
         Players = snapshot.Players.Select(p => p.Clone()).ToList();
         Dealer = snapshot.Dealer.Clone();
@@ -339,6 +399,118 @@ public class Blackjack
 
     public void ClearUndo() => UndoStack.Clear();
 
+    /// <summary>
+    /// Payouts marked sent now that the next Undo would forget, per person. A snapshot
+    /// carries each row's sent-trade count from when it was taken, so anything sent since
+    /// is lost from the rows on restore — while the gil itself stays with the player.
+    /// </summary>
+    public (string Name, int Amount)[] PayoutsUndoWouldForget()
+    {
+        if (!CanUndo || Plugin.State is not GameState.Done)
+            return Array.Empty<(string, int)>();
+
+        var snapshot = UndoStack[^1];
+        var banks = Plugin.Configuration.Banks;
+        var result = new List<(string, int)>();
+
+        foreach (var player in Players.Where(IsSettlementRow))
+        {
+            if (banks.ContainsKey(player.Name) || player.TradesCompleted <= 0)
+                continue;
+
+            var chunks = SplitIntoTrades(SettlementFor(player));
+            var sentNow = Math.Clamp(player.TradesCompleted, 0, chunks.Length);
+            var sentThen = snapshot.Players.FirstOrDefault(p => p.Name == player.Name)?.TradesCompleted ?? 0;
+            sentThen = Math.Clamp(sentThen, 0, sentNow);
+
+            var forgotten = chunks.Skip(sentThen).Take(sentNow - sentThen).Sum();
+            if (forgotten > 0)
+                result.Add((player.Name, forgotten));
+        }
+
+        return result.ToArray();
+    }
+
+    #endregion
+
+    #region Banks
+
+    /// <summary>
+    /// Writes the round's result into each banked player's balance. Its own undo step, so
+    /// Undo straight afterwards takes exactly this back out and nothing else.
+    ///
+    /// Deposits and cash-outs on the Banking tab are deliberately NOT undoable from here:
+    /// they record gil that physically changed hands, and no button in the plugin can
+    /// un-trade it.
+    /// </summary>
+    public void ApplyToBanks()
+    {
+        if (BanksApplied)
+            return;
+
+        var banks = Plugin.Configuration.Banks;
+        var banked = Players
+            .Where(IsSettlementRow)
+            .Where(p => banks.ContainsKey(p.Name))
+            .ToArray();
+
+        if (banked.Length == 0)
+            return;
+
+        PushUndo("apply to banks");
+
+        BankPosting.Clear();
+        foreach (var player in banked)
+        {
+            var delta = (long)TotalWinnings(player);
+            var account = banks[player.Name];
+
+            account.Balance += delta;
+            account.WonLost += delta;
+            BankPosting[player.Name] = delta;
+        }
+
+        BanksApplied = true;
+        Plugin.Configuration.Save();
+    }
+
+    /// <summary>
+    /// Takes the last posting back out. If the player was cashed out in between, their
+    /// balance can land below zero — that is correct, not a glitch: it is the gil they were
+    /// handed that the corrected round no longer says they won, and the table shows it red.
+    /// </summary>
+    private void ReverseBankPosting()
+    {
+        var banks = Plugin.Configuration.Banks;
+
+        foreach (var (name, delta) in BankPosting)
+        {
+            // Closed since — nothing left to correct.
+            if (!banks.TryGetValue(name, out var account))
+                continue;
+
+            account.Balance -= delta;
+            account.WonLost -= delta;
+        }
+
+        BankPosting.Clear();
+        Plugin.Configuration.Save();
+    }
+
+    /// <summary>Summarises the pending bank reversal for the Undo tooltip; empty if none.</summary>
+    public string PendingBankReversal
+    {
+        get
+        {
+            if (!BanksApplied || !CanUndo || UndoStack[^1].BanksApplied || BankPosting.Count == 0)
+                return string.Empty;
+
+            var net = BankPosting.Values.Sum();
+            var sign = net > 0 ? "-" : "+";
+            return $"Also takes {sign}{Math.Abs(net):N0} back off {BankPosting.Count} bank account(s).";
+        }
+    }
+
     #endregion
 
     public Blackjack(Plugin plugin)
@@ -349,6 +521,8 @@ public class Blackjack
     public void Reset()
     {
         BanksApplied = false;
+        BankPosting.Clear();
+        SentBeforeUndo.Clear();
         ClearUndo();
         Players.Clear();
         CurrentPlayerIndex = 0;
@@ -429,10 +603,17 @@ public class Blackjack
 
     public void Parser(Roll roll)
     {
-        // Snapshot before any roll that could place a card. Players are seated by hand
-        // rather than by rolling, so nothing happens during registration.
-        if (Plugin.State is not GameState.Registration && roll.OutOf == 13)
-            PushUndo($"roll of {roll.Result}");
+        // Players are seated by hand rather than by rolling, so nothing happens during
+        // registration, and only a 13 can be a card.
+        if (Plugin.State is GameState.Registration || roll.OutOf != 13)
+            return;
+
+        // Snapshot before the roll could place a card, then keep the snapshot only if it
+        // did. Every accepted roll adds exactly one card to the table, so an unchanged count
+        // means it was a bystander's roll, the wrong player's, or arrived between steps —
+        // and it should not leave the dealer an Undo that visibly does nothing.
+        var cardsBefore = CardsOnTable();
+        PushUndo($"roll of {roll.Result}");
 
         switch (Plugin.State)
         {
@@ -445,10 +626,13 @@ public class Blackjack
             case GameState.DealerFirstCards or GameState.DealerSecondCards or GameState.DrawDealerCard:
                 ParseDealerCards(roll);
                 break;
-            default:
-                return;
         }
+
+        if (CardsOnTable() == cardsBefore)
+            DropLastUndo();
     }
+
+    private int CardsOnTable() => Dealer.Cards.Count + Players.Sum(p => p.Cards.Count);
 
     #region Roll Parsing
 
@@ -608,6 +792,10 @@ public class Blackjack
 
     public void Surrender()
     {
+        // Guard against a stale click, same as Split.
+        if (!CanSurrender(CurrentPlayer))
+            return;
+
         PushUndo($"{CurrentPlayer.DisplayName} surrender");
         CurrentPlayer.Outcome = HandOutcome.Surrender;
         CurrentPlayer.HandClosed = true;
@@ -747,9 +935,11 @@ public class Blackjack
                 CurrentPlayer.HandClosed = true;
                 CurrentPlayer.LastAction = BlackjackActions.Bust;
                 return true;
-            case 21 when CurrentPlayer.Cards.Count == 2:
+            case 21 when CurrentPlayer.Cards.Count == 2 && !IsPartOfSplit(CurrentPlayer):
                 // Provisional. A natural still has to be compared against the dealer:
                 // it pushes against another natural, and beats everything else.
+                // Only the original hand can be a natural. Two cards to 21 after a split
+                // falls through to the case below and pays even money.
                 CurrentPlayer.Outcome = HandOutcome.Blackjack;
                 CurrentPlayer.HandClosed = true;
                 CurrentPlayer.LastAction = BlackjackActions.Blackjack;
@@ -826,6 +1016,8 @@ public class Blackjack
 
         Dealer = new BlackjackPlayer("Dealer", 0);
         BanksApplied = false;
+        BankPosting.Clear();
+        SentBeforeUndo.Clear();
         ClearUndo();
         Plugin.SwitchState(GameState.Registration);
     }

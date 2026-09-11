@@ -16,9 +16,10 @@ public class GameSnapshot
     public readonly List<BlackjackPlayer> Players;
 
     /// <summary>
-    /// Whether the round had already been written to player banks. Restored with everything
-    /// else, so undoing past the point banks were applied re-offers the button instead of
-    /// leaving balances describing a round that no longer exists.
+    /// Whether the round had already been written to player banks. Restoring this flag on
+    /// its own is not enough — the balances live outside the snapshot — so Blackjack.Undo
+    /// reverses the recorded posting whenever it steps back across the point banks were
+    /// applied, then re-offers the button.
     /// </summary>
     public readonly bool BanksApplied;
 

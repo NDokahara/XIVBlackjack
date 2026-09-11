@@ -151,7 +151,7 @@ public unsafe class TradeAutomation : IDisposable
         if (IsRunning)
             return;
 
-        if (player.Name == Plugin.LocalPlayer)
+        if (player.RootName == Plugin.LocalPlayer)
         {
             Fail("You cannot trade with yourself.");
             return;
@@ -162,7 +162,10 @@ public unsafe class TradeAutomation : IDisposable
 
         Pending.Clear();
         Subject = player;
-        IntendedPartner = player.Name;
+
+        // A split hand is named "<player> Split", which matches nobody in the world. The
+        // person handing over the stake is always the root player.
+        IntendedPartner = player.RootName;
         IntendedAmount = 0;
         RunTotal = 1;
         RunIndex = 1;
@@ -183,6 +186,20 @@ public unsafe class TradeAutomation : IDisposable
 
         Plugin.Log.Information($"[Trade] Trade {RunIndex}/{RunTotal}: {IntendedAmount:N0}");
         Advance(TradeStep.Targeting);
+    }
+
+    /// <summary>
+    /// Clears a finished run's result line. Without this, "All 3 trades done" from the last
+    /// round sits under the next round's settlement, right beside a payout that hasn't gone.
+    /// Leaves a run that is still going alone.
+    /// </summary>
+    public void ClearStatus()
+    {
+        if (IsRunning)
+            return;
+
+        Step = TradeStep.Idle;
+        StatusMessage = string.Empty;
     }
 
     public void Cancel()
@@ -324,7 +341,7 @@ public unsafe class TradeAutomation : IDisposable
                 // a cancel looks identical from here — but the chat-message approach that could
                 // tell them apart did not fire reliably, and stalling a real payout to ask about
                 // a trade that went through is worse than over-counting a rare cancel. The
-                // dealer can undo. See the [Trade] chat logging in Plugin.OnChatMessage for the
+                // dealer can reset the row's count. See the [Trade] chat logging in Plugin.OnChatMessage for the
                 // diagnostic groundwork if this gets revisited.
                 MarkSentAndContinue();
                 return;

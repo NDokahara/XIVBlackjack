@@ -11,7 +11,9 @@ public partial class MainWindow
     private const string HelpText = "- Hit: Player draws a card," +
                                     "\n- Stay: Player holds hand as it is" +
                                     "\n- Surrender: Player drops out of round and loses half the bet" +
+                                    "\n    > First move only, on the opening two cards, and not after a split" +
                                     "\n- Double Down: Player bets double, but receives exactly one more card" +
+                                    "\n    > Two-card hands only, including a fresh split hand" +
                                     "\n- Split: Only possible at round start, and if the player has same Rank cards (e.g K and K)" +
                                     "\n    > Player opens a new hand with one card in each hand, puts another bet of same amount, and draws with both hands a card" +
                                     "\n    > Round continues as before, with the split hands turn happening later";
@@ -82,7 +84,39 @@ public partial class MainWindow
 
         HookWarning();
 
+        SentBeforeUndoNotice();
+
         RollButton();
+    }
+
+    /// <summary>First name only, matching how names show everywhere else on the table.</summary>
+    private static string Flavour(string fullName) =>
+        DebugConfig.RandomizeNames
+            ? Utils.GenerateHashedName(fullName)
+            : fullName.Replace("\uE05D", "\uE05D ").Split("\uE05D ").First();
+
+    /// <summary>
+    /// Stays up after an Undo that forgot sent payouts, until the dealer dismisses it or the
+    /// round ends — the confirm popup is gone by the time they are re-settling, which is the
+    /// moment they would otherwise pay the same person twice.
+    /// </summary>
+    private void SentBeforeUndoNotice()
+    {
+        var sent = Plugin.Blackjack.SentBeforeUndo;
+        if (sent.Count == 0)
+            return;
+
+        ImGuiHelpers.ScaledDummy(3.0f);
+        ImGui.TextColored(Helper.Yellow,
+            $"Already traded before an undo: {string.Join(", ", sent.Select(kv => $"{Flavour(kv.Key)} {kv.Value:N0}"))}");
+        ImGui.TextWrapped("The payout rows don't know about this. Take it off what you send them, " +
+                          "or mark it sent if it already covers what they're owed.");
+
+        if (ImGui.SmallButton("Got it##sentBeforeUndo"))
+            sent.Clear();
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Hide this once you've squared it up.");
     }
 
     /// <summary>
@@ -121,6 +155,7 @@ public partial class MainWindow
                     return;
 
                 Plugin.Blackjack.Reset();
+                Plugin.TradeAutomation.ClearStatus();
                 Plugin.SwitchState(GameState.Registration);
                 return;
 
@@ -133,6 +168,7 @@ public partial class MainWindow
                     return;
 
                 Plugin.Blackjack.Reset();
+                Plugin.TradeAutomation.ClearStatus();
                 Plugin.SwitchState(GameState.NotRunning);
                 return;
 
@@ -141,15 +177,17 @@ public partial class MainWindow
                     return;
 
                 Plugin.Blackjack.Reset();
+                Plugin.TradeAutomation.ClearStatus();
                 Plugin.SwitchState(GameState.NotRunning);
                 return;
         }
     }
 
     /// <summary>
-    /// Writes the round's result into each banked player's balance. Guarded so it can only
-    /// land once per round — applying it automatically when the round resolves would fight
-    /// with Undo and could double-credit.
+    /// Offers the button that writes the round's result into each banked player's balance.
+    /// The write itself lives in Blackjack.ApplyToBanks, which records it so Undo can take
+    /// it back out. Not applied automatically when the round resolves, since that would
+    /// fight with Undo.
     /// </summary>
     private void ApplyToBanksPanel()
     {
@@ -174,19 +212,7 @@ public partial class MainWindow
         var net = banked.Sum(p => (long)Plugin.Blackjack.TotalWinnings(p));
 
         if (ImGui.Button("Apply to Banks"))
-        {
-            foreach (var player in banked)
-            {
-                var account = banks[player.Name];
-                var delta = (long)Plugin.Blackjack.TotalWinnings(player);
-
-                account.Balance += delta;
-                account.WonLost += delta;
-            }
-
-            Plugin.Blackjack.BanksApplied = true;
-            Plugin.Configuration.Save();
-        }
+            Plugin.Blackjack.ApplyToBanks();
 
         ImGui.SameLine();
         if (net > 0)
@@ -197,6 +223,10 @@ public partial class MainWindow
             ImGui.Text($"no change across {banked.Length} account(s)");
     }
 
+    private const string UndoLimits = "Undo rewinds the table, not the gil. It can't take back anything that has " +
+                                      "already changed hands: payouts you've sent, or deposits and cash-outs on the " +
+                                      "Banking tab.";
+
     private void UndoButton()
     {
         if (!Plugin.Blackjack.CanUndo)
@@ -204,15 +234,70 @@ public partial class MainWindow
 
         ImGui.SameLine();
 
+        var forgotten = Plugin.Blackjack.PayoutsUndoWouldForget();
+
         ImGui.PushStyleColor(ImGuiCol.Button, Helper.Red);
         var pressed = ImGui.Button("Undo");
         ImGui.PopStyleColor();
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip($"Undo: {Plugin.Blackjack.LastUndoLabel}\n{Plugin.Blackjack.UndoDepth} step(s) available");
+        {
+            var tip = $"Undo: {Plugin.Blackjack.LastUndoLabel}\n{Plugin.Blackjack.UndoDepth} step(s) available";
+
+            var bankNote = Plugin.Blackjack.PendingBankReversal;
+            if (bankNote.Length > 0)
+                tip += $"\n\n{bankNote}";
+
+            if (forgotten.Length > 0)
+                tip += $"\n\nYou've already sent {forgotten.Sum(f => f.Amount):N0} in payouts this round. " +
+                       "Undo won't bring that gil back \u2014 you'll be asked to confirm.";
+
+            ImGui.SetTooltip($"{tip}\n\n{UndoLimits}");
+        }
 
         if (pressed)
+        {
+            // Sent payouts are the one case where a mis-click costs real gil, so it asks first.
+            if (forgotten.Length > 0)
+                ImGui.OpenPopup("##UndoSentConfirm");
+            else
+                Plugin.Blackjack.Undo();
+        }
+
+        UndoSentConfirmPopup(forgotten);
+    }
+
+    private void UndoSentConfirmPopup((string Name, int Amount)[] forgotten)
+    {
+        if (!ImGui.BeginPopup("##UndoSentConfirm"))
+            return;
+
+        ImGui.TextColored(Helper.Red, "You've already paid out this round:");
+        foreach (var (name, amount) in forgotten)
+            ImGui.Text($"  {Flavour(name)}: {amount:N0}");
+
+        ImGuiHelpers.ScaledDummy(4.0f);
+        ImGui.PushTextWrapPos(ImGui.GetFontSize() * 24.0f);
+        ImGui.TextWrapped("Undo rewinds the table, but that gil stays with them. Their payout rows will reset, " +
+                          "and when you settle again the plugin will offer the full amount as if nothing went out.");
+        ImGuiHelpers.ScaledDummy(2.0f);
+        ImGui.TextWrapped("A reminder of what was sent stays at the top of the table until you dismiss it.");
+        ImGui.PopTextWrapPos();
+        ImGuiHelpers.ScaledDummy(4.0f);
+
+        ImGui.PushStyleColor(ImGuiCol.Button, Helper.Red);
+        if (ImGui.Button("Undo anyway"))
+        {
             Plugin.Blackjack.Undo();
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.PopStyleColor();
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+            ImGui.CloseCurrentPopup();
+
+        ImGui.EndPopup();
     }
 
     private void MatchDonePanel()
@@ -221,7 +306,10 @@ public partial class MainWindow
         ImGui.TextColored(Helper.Yellow, $"All bets are adjusted to the correct amount for payouts.");
 
         if (ImGui.Button("Play Again"))
+        {
             Plugin.Blackjack.TakePeopleIntoNextRound();
+            Plugin.TradeAutomation.ClearStatus();
+        }
 
         ImGui.SameLine();
 
@@ -315,7 +403,12 @@ public partial class MainWindow
         var player = blackjack.CurrentPlayer;
         var venue = Plugin.Configuration is { VenueDealer: true };
         var rolls = venue && Plugin.Configuration.ButtonsRoll;
-        var collects = venue && Plugin.Configuration.CollectOnDoubleSplit;
+
+        // A banked player's extra stake comes out of their balance when the round settles,
+        // so there is nothing to collect by trade. Keyed on RootName so a split hand still
+        // matches the account.
+        var banked = Plugin.Configuration.Banks.ContainsKey(player.RootName);
+        var collects = venue && Plugin.Configuration.CollectOnDoubleSplit && !banked;
 
         ImGui.TextColored(Helper.Yellow, $"Current Player: {player.DisplayName}");
         ImGui.Text("Player Options:");
@@ -335,10 +428,12 @@ public partial class MainWindow
         if (ImGui.Button("Stay"))
             blackjack.Stay();
 
-        if (ImGui.Button("Surrender"))
+        // Surrender and Double Down only appear when the rules allow them, the same way
+        // Split does — see Blackjack.CanSurrender and CanDoubleDown.
+        if (blackjack.CanSurrender(player) && ImGui.Button("Surrender"))
             blackjack.Surrender();
 
-        if (ImGui.Button("Double Down"))
+        if (blackjack.CanDoubleDown(player) && ImGui.Button("Double Down"))
         {
             blackjack.PushUndo($"{player.DisplayName} double down");
             Plugin.SwitchState(GameState.DoubleDown);
@@ -527,12 +622,12 @@ public partial class MainWindow
             return;
 
         ImGui.TableSetupColumn("Player", 0, 0.6f);
+        ImGui.TableSetupColumn("Initial Wager", 0, 0.45f);
         ImGui.TableSetupColumn("Total Wagered", 0, 0.45f);
         ImGui.TableSetupColumn("Winnings", 0, 0.45f);
         ImGui.TableSetupColumn("Player Total", 0, 0.45f);
         ImGui.TableSetupColumn("Roll-over Bet", 0, 0.45f);
         ImGui.TableSetupColumn("Trade", 0, 0.55f);
-        ImGui.TableSetupColumn("##Action", 0, 0.4f);
         ImGui.TableHeadersRow();
 
         var totalOut = 0;
@@ -563,10 +658,19 @@ public partial class MainWindow
                 ImGui.Text(hands > 1 ? $"{pFlavor} ({hands} hands)" : pFlavor);
             }
 
+            // The bet they opened the round with — the standing wager on their original hand,
+            // before any double or split. Same figure the Roll-over Bet holds back.
+            var initial = rollOver;
+
+            ImGui.TableNextColumn();
+            ImGui.Text($"{initial:N0}");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("The bet they opened the round with.");
+
             ImGui.TableNextColumn();
             ImGui.Text($"{wagered:N0}");
-            if (ImGui.IsItemHovered() && wagered != rollOver)
-                ImGui.SetTooltip($"Standing bet {rollOver:N0}, plus {wagered - rollOver:N0} put up for splits or doubles.");
+            if (ImGui.IsItemHovered() && wagered != initial)
+                ImGui.SetTooltip($"Initial wager {initial:N0}, plus {wagered - initial:N0} put up for splits or doubles.");
 
             ImGui.TableNextColumn();
             if (winnings > 0)
@@ -581,21 +685,39 @@ public partial class MainWindow
             // left to right as the arithmetic actually performed.
             var held = wagered + winnings;
 
+            // Player Total and Roll-over Bet describe gil the dealer is physically holding. A
+            // banked player never hands a bet over, so for them both would be numbers with
+            // nothing behind them — and easy to misread as what goes into the bank.
             ImGui.TableNextColumn();
-            ImGui.Text($"{held:N0}");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip($"What you are holding for {pFlavor}: {wagered:N0} wagered {(winnings < 0 ? "-" : "+")} {Math.Abs(winnings):N0} winnings.");
+            if (isBanked)
+            {
+                BankedBlank("Banked \u2014 their bet never left their balance, so you aren't holding anything for them.\n" +
+                            "Only Winnings counts: it goes straight onto the bank.");
+            }
+            else
+            {
+                ImGui.Text($"{held:N0}");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip($"What you are holding for {pFlavor}: {wagered:N0} wagered {(winnings < 0 ? "-" : "+")} {Math.Abs(winnings):N0} winnings.");
+            }
 
             // Nothing rolls over when the residual could not cover it — the player restakes,
             // so showing their old wager here would claim the dealer is holding gil they are not.
             var restaking = Plugin.Blackjack.NeedsRestakeAfter(player);
 
             ImGui.TableNextColumn();
-            ImGui.Text($"{(restaking ? 0 : rollOver):N0}");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(restaking
-                    ? "Nothing held back \u2014 they need to restake next round."
-                    : "Held back as their stake for the next round.");
+            if (isBanked)
+            {
+                BankedBlank("Banked \u2014 nothing is held back. Next round's bet comes out of their balance.");
+            }
+            else
+            {
+                ImGui.Text($"{(restaking ? 0 : rollOver):N0}");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(restaking
+                        ? "Nothing held back \u2014 they need to restake next round."
+                        : "Held back as their stake for the next round.");
+            }
 
             var chunks = Blackjack.SplitIntoTrades(settlement);
 
@@ -640,87 +762,11 @@ public partial class MainWindow
                 }
             }
 
-            ImGui.TableNextColumn();
-
-            if (isBanked)
-            {
-                // Nothing to send; Apply to Banks below handles them.
-            }
-            else if (settlement > 0)
-            {
-                var sent = Math.Clamp(player.TradesCompleted, 0, chunks.Length);
-                var allSent = sent >= chunks.Length;
-
-                if (allSent)
-                {
-                    ImGui.TextColored(Helper.Green, chunks.Length > 1 ? $"all {chunks.Length} sent" : "sent");
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton($"undo##settle{player.Name}"))
-                        player.TradesCompleted = 0;
-
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip("Reset this player's trade progress.");
-                }
-                else
-                {
-                    var amount = chunks[sent];
-                    var label = chunks.Length > 1 ? $"Target ({sent + 1}/{chunks.Length})" : "Target";
-
-                    if (ImGui.SmallButton($"{label}##settle{player.Name}"))
-                    {
-                        if (Plugin.TargetPlayerByName(player.Name))
-                            ImGui.SetClipboardText(amount.ToString());
-                        else
-                            Plugin.Notification.AddNotification(new Notification
-                            {
-                                Content = $"{pFlavor} is not nearby.",
-                                Type = NotificationType.Warning
-                            });
-                    }
-
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip($"Targets {pFlavor} and copies {amount:N0} to the clipboard.\nOpen the trade yourself and paste.");
-
-                    ImGui.SameLine();
-
-                    var auto = Plugin.TradeAutomation;
-                    var busy = auto.IsRunning;
-
-                    if (busy)
-                        ImGui.BeginDisabled();
-
-                    // Queues every remaining chunk, so a payout over the cap runs as a chain
-                    // off one click rather than one click per trade.
-                    var remaining = chunks.Skip(sent).ToArray();
-                    var autoLabel = remaining.Length > 1 ? $"Auto ({remaining.Length} trades)" : "Auto";
-
-                    if (ImGui.SmallButton($"{autoLabel}##settle{player.Name}"))
-                        auto.Begin(player, remaining);
-
-                    if (busy)
-                        ImGui.EndDisabled();
-
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip($"Targets {pFlavor}, opens the trade and fills in the amount.\n" +
-                                         $"Runs {string.Join(" + ", remaining.Select(c => $"{c:N0}"))}.\n" +
-                                         "You hit Trade; the next window opens once the last one closes.");
-
-                    ImGui.SameLine();
-
-                    // Advancing is a separate, deliberate click — a trade can be cancelled
-                    // or declined, so sending is never assumed from targeting.
-                    if (ImGui.SmallButton($"sent##settle{player.Name}"))
-                        player.TradesCompleted = sent + 1;
-
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip(chunks.Length > 1
-                            ? $"Mark the {amount:N0} trade as sent and move to trade {sent + 2} of {chunks.Length}."
-                            : $"Mark the {amount:N0} trade as sent.");
-                }
-            }
         }
 
         ImGui.EndTable();
+
+        PayoutActionsRender();
 
         ApplyToBanksPanel();
 
@@ -767,6 +813,137 @@ public partial class MainWindow
             ImGui.TextColored(sentCount >= tradeCount ? Helper.Green : Helper.Yellow,
                 $"Trading out: {totalOut:N0} \u2014 {sentCount} of {tradeCount} trade(s) sent");
         }
+    }
+
+    /// <summary>
+    /// The trade buttons, one line per player still owed a payout. They used to ride in an
+    /// extra column at the end of the settlement table, which at any ordinary window width got
+    /// squeezed off the right edge. Here they get the full width and size to their contents,
+    /// so they fit at the window's minimum size — and the list doubles as a to-do.
+    /// </summary>
+    private void PayoutActionsRender()
+    {
+        var rows = Plugin.Blackjack.Players
+            .Where(Blackjack.IsSettlementRow)
+            .Where(p => !Plugin.Configuration.Banks.ContainsKey(p.Name))
+            .Select(p => (Player: p, Settlement: Plugin.Blackjack.SettlementFor(p)))
+            .Where(r => r.Settlement > 0)
+            .ToArray();
+
+        if (rows.Length == 0)
+            return;
+
+        ImGuiHelpers.ScaledDummy(6.0f);
+        ImGui.TextColored(Helper.Yellow, "Payouts to send:");
+
+        if (!ImGui.BeginTable("##BlackjackPayoutActions", 3, ImGuiTableFlags.SizingFixedFit))
+            return;
+
+        ImGui.TableSetupColumn("##PayoutWho");
+        ImGui.TableSetupColumn("##PayoutAmount");
+        ImGui.TableSetupColumn("##PayoutButtons", ImGuiTableColumnFlags.WidthStretch);
+
+        foreach (var (player, settlement) in rows)
+        {
+            var pFlavor = $"{player.DisplayName.Split("\uE05D ").First()}";
+            var chunks = Blackjack.SplitIntoTrades(settlement);
+            var sent = Math.Clamp(player.TradesCompleted, 0, chunks.Length);
+            var allSent = sent >= chunks.Length;
+
+            ImGui.TableNextColumn();
+            ImGui.AlignTextToFramePadding();
+            ImGui.Text(pFlavor);
+
+            ImGui.TableNextColumn();
+            ImGui.AlignTextToFramePadding();
+
+            if (allSent)
+            {
+                ImGui.TextColored(Helper.Green, chunks.Length > 1 ? $"all {chunks.Length} sent" : "sent");
+
+                ImGui.TableNextColumn();
+                if (ImGui.SmallButton($"reset##settle{player.Name}"))
+                    player.TradesCompleted = 0;
+
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Only for a trade that was cancelled but still got marked sent.\n" +
+                                     "This just resets the counter \u2014 it doesn't take back gil that went through.");
+
+                continue;
+            }
+
+            var amount = chunks[sent];
+            ImGui.TextColored(Helper.Green, chunks.Length > 1
+                ? $"{amount:N0}  ({sent + 1} of {chunks.Length})"
+                : $"{amount:N0}");
+
+            if (ImGui.IsItemHovered() && chunks.Length > 1)
+                ImGui.SetTooltip($"{settlement:N0} in total, over the {Blackjack.TradeCap:N0} per-trade cap:\n  " +
+                                 string.Join("\n  ", chunks.Select((c, n) => $"{c:N0}{(n < sent ? "  (sent)" : "")}")));
+
+            ImGui.TableNextColumn();
+
+            if (ImGui.SmallButton($"Target##settle{player.Name}"))
+            {
+                if (Plugin.TargetPlayerByName(player.Name))
+                    ImGui.SetClipboardText(amount.ToString());
+                else
+                    Plugin.Notification.AddNotification(new Notification
+                    {
+                        Content = $"{pFlavor} is not nearby.",
+                        Type = NotificationType.Warning
+                    });
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip($"Targets {pFlavor} and copies {amount:N0} to the clipboard.\nOpen the trade yourself and paste.");
+
+            ImGui.SameLine();
+
+            var auto = Plugin.TradeAutomation;
+            var busy = auto.IsRunning;
+
+            if (busy)
+                ImGui.BeginDisabled();
+
+            // Queues every remaining chunk, so a payout over the cap runs as a chain
+            // off one click rather than one click per trade.
+            var remaining = chunks.Skip(sent).ToArray();
+            var autoLabel = remaining.Length > 1 ? $"Auto ({remaining.Length} trades)" : "Auto";
+
+            if (ImGui.SmallButton($"{autoLabel}##settle{player.Name}"))
+                auto.Begin(player, remaining);
+
+            if (busy)
+                ImGui.EndDisabled();
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip($"Targets {pFlavor}, opens the trade and fills in the amount.\n" +
+                                 $"Runs {string.Join(" + ", remaining.Select(c => $"{c:N0}"))}.\n" +
+                                 "You hit Trade; the next window opens once the last one closes.");
+
+            ImGui.SameLine();
+
+            // Advancing is a separate, deliberate click — a trade can be cancelled
+            // or declined, so sending is never assumed from targeting.
+            if (ImGui.SmallButton($"Sent##settle{player.Name}"))
+                player.TradesCompleted = sent + 1;
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(chunks.Length > 1
+                    ? $"Mark the {amount:N0} trade as sent and move to trade {sent + 2} of {chunks.Length}."
+                    : $"Mark the {amount:N0} trade as sent.");
+        }
+
+        ImGui.EndTable();
+    }
+
+    /// <summary>A greyed-out dash for a cell that has no meaning for a banked player.</summary>
+    private static void BankedBlank(string tooltip)
+    {
+        ImGui.TextDisabled("\u2014");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(tooltip);
     }
 
     private void MatchBeginDraw()
